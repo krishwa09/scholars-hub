@@ -44,17 +44,11 @@ This repo must be pushed to GitHub first (see "Push to GitHub" below).
 
 1. Render → **New → Blueprint** → select your repo. It reads [`render.yaml`](render.yaml)
    and creates a **Postgres** database and the **Docker web service** for `backend/`.
-2. Render can't auto-format the JDBC URL, so set two env vars on the `scholars-hub-api`
-   service (they're marked "sync: false" in the blueprint):
-   - **`SPRING_DATASOURCE_URL`** — open the created database, copy its *Internal Database URL*
-     (looks like `postgresql://user:pass@host:5432/scholarshub`) and rewrite it as:
-     ```
-     jdbc:postgresql://host:5432/scholarshub
-     ```
-     (drop the `user:pass@` part and change the scheme to `jdbc:postgresql`; the username and
-     password are already injected separately by the blueprint.)
-   - **`FRONTEND_ORIGIN`** — your Vercel URL, e.g. `https://scholars-hub.vercel.app`
-     (you'll have this after B2; you can set it then and redeploy).
+   The database connection is wired automatically (host/port/name/user/password are
+   injected from the managed Postgres and the JDBC URL is assembled in `application-prod.properties`).
+2. The only var you set by hand is **`FRONTEND_ORIGIN`** (marked "sync: false") — your
+   Vercel URL, e.g. `https://scholars-hub.vercel.app`. You'll have it after B2, so you can
+   leave it blank for the first deploy and set it once Vercel is live, then redeploy.
 3. Deploy. When it's live, test: `https://<your-api>.onrender.com/api/subjects` returns JSON.
 
 > Free Render services sleep when idle and cold-start in ~30–60s on the first request.

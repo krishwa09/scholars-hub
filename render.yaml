@@ -18,6 +18,20 @@ services:
     envVars:
       - key: SPRING_PROFILES_ACTIVE
         value: prod
+      # The JDBC URL is assembled from these parts in application-prod.properties,
+      # so no manual URL editing is needed.
+      - key: DB_HOST
+        fromDatabase:
+          name: scholars-hub-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: scholars-hub-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: scholars-hub-db
+          property: database
       - key: SPRING_DATASOURCE_USERNAME
         fromDatabase:
           name: scholars-hub-db
@@ -26,11 +40,7 @@ services:
         fromDatabase:
           name: scholars-hub-db
           property: password
-      # Render's DB gives a `postgresql://…` URL; Spring needs the `jdbc:postgresql://…`
-      # form. After the DB is created, copy its Internal Database URL, turn it into
-      # jdbc:postgresql://HOST:PORT/DBNAME and paste it here (set in the dashboard).
-      - key: SPRING_DATASOURCE_URL
-        sync: false
       # Your deployed frontend origin, e.g. https://scholars-hub.vercel.app
+      # Set this after Vercel gives you a URL (step B2), then redeploy.
       - key: FRONTEND_ORIGIN
         sync: false
