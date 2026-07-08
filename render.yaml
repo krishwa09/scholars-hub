@@ -1,0 +1,36 @@
+# Render Blueprint — provisions the Spring Boot API + a managed Postgres.
+# In Render: New → Blueprint → point at this repo. Deploy the frontend separately
+# on Vercel/Netlify (see DEPLOY.md).
+databases:
+  - name: scholars-hub-db
+    plan: free
+    databaseName: scholarshub
+    user: scholars
+
+services:
+  - type: web
+    name: scholars-hub-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/subjects
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      - key: SPRING_DATASOURCE_USERNAME
+        fromDatabase:
+          name: scholars-hub-db
+          property: user
+      - key: SPRING_DATASOURCE_PASSWORD
+        fromDatabase:
+          name: scholars-hub-db
+          property: password
+      # Render's DB gives a `postgresql://…` URL; Spring needs the `jdbc:postgresql://…`
+      # form. After the DB is created, copy its Internal Database URL, turn it into
+      # jdbc:postgresql://HOST:PORT/DBNAME and paste it here (set in the dashboard).
+      - key: SPRING_DATASOURCE_URL
+        sync: false
+      # Your deployed frontend origin, e.g. https://scholars-hub.vercel.app
+      - key: FRONTEND_ORIGIN
+        sync: false

@@ -1,0 +1,45 @@
+# Full-stack local/self-hosted deployment: Postgres + Spring Boot API + nginx-served React app.
+#   docker compose up --build
+# Then open http://localhost:8081  (API at http://localhost:8080)
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scholarshub}
+      POSTGRES_USER: ${POSTGRES_USER:-scholars}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scholars_pw}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scholars}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-scholarshub}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-scholars}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-scholars_pw}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:8081}
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # The browser calls the backend on the host-published port.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080/api}
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+
+volumes:
+  db-data:
