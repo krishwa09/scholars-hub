@@ -11,5 +11,7 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8080
-# SPRING_PROFILES_ACTIVE=prod + the SPRING_DATASOURCE_* env vars switch to Postgres.
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# SPRING_PROFILES_ACTIVE=prod + the DB_* / SPRING_DATASOURCE_* env vars switch to Postgres.
+# MaxRAMPercentage keeps the JVM within small free-tier containers (e.g. Render's 512MB)
+# instead of the default 25% heap, which can OOM under load.
+ENTRYPOINT ["sh", "-c", "java -XX:MaxRAMPercentage=70 -XX:+UseSerialGC -jar app.jar"]
