@@ -6,6 +6,14 @@ frontend/.vite/
 # Backend
 backend/target/
 
+# Secrets — never commit these (SMTP passwords, API keys, DB creds)
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+frontend/.env.local
+
 # Editor / OS
 .DS_Store
 .idea/
