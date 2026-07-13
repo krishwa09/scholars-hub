@@ -40,3 +40,33 @@ export const api = {
     return val;
   },
 };
+
+/* ------------------------------------------------------------------ */
+/*  Auth: OTP-verified sign-up and password reset                      */
+/*  Each call resolves to { ok, msg?, devCode?, user? }. A non-ok body */
+/*  is returned as-is so the UI can show the server's message.         */
+/* ------------------------------------------------------------------ */
+async function post(path, body) {
+  const r = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data;
+  try {
+    data = await r.json();
+  } catch {
+    throw new Error(`Server error (HTTP ${r.status}). Is the backend running?`);
+  }
+  return data;
+}
+
+export const authApi = {
+  // sign-up: request a code, then verify it to create the account
+  registerRequest: (name, email, password) => post("/auth/register/request", { name, email, password }),
+  registerVerify: (email, code) => post("/auth/register/verify", { email, code }),
+
+  // forgot password: request a code, then verify it to set a new password
+  forgotRequest: (email) => post("/auth/password/forgot", { email }),
+  resetPassword: (email, code, newPassword) => post("/auth/password/reset", { email, code, newPassword }),
+};

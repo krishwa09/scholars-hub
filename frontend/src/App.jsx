@@ -9,7 +9,7 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid
 } from "recharts";
-import { api as DB, API_BASE } from "./api";
+import { api as DB, authApi, API_BASE } from "./api";
 
 /* ------------------------------------------------------------------ */
 /*  Brand tokens (inline styles, since no Tailwind compiler)          */
@@ -321,6 +321,20 @@ export default function App() {
       });
   }, [notify]);
 
+  // The backend creates/updates users during OTP sign-up and password reset, so
+  // pull the collection back in before the client-side login check runs.
+  const reloadUsers = useCallback(async () => {
+    try {
+      const u = await DB.get("users");
+      if (u) setUsers(u);
+      return u;
+    } catch (e) {
+      console.error("[app] could not reload users:", e);
+      setOffline(true);
+      return null;
+    }
+  }, []);
+
   // persisters
   const saveSettings = (s) => { setSettings(s); persist("settings", s); };
   const saveSubjects = (s) => { setSubjects(s); persist("subjects", s); };
@@ -419,9 +433,10 @@ export default function App() {
         submitPurchase={submitPurchase} notify={notify} />}
       {view.name === "notes" && <FreeNotesPage pdfs={pdfs} subjects={subjects} currentUser={currentUser}
         settings={settings} hasAccess={hasAccess} go={go} submitPurchase={submitPurchase} notify={notify} />}
-      {view.name === "login" && <AuthPage mode="login" settings={settings} login={login} register={register} go={go} notify={notify} />}
-      {view.name === "register" && <AuthPage mode="register" settings={settings} login={login} register={register} go={go} notify={notify} />}
-      {view.name === "forgot" && <AuthPage mode="forgot" settings={settings} login={login} register={register} go={go} notify={notify} />}
+      {["login", "register", "forgot"].includes(view.name) && (
+        <AuthPage mode={view.name} settings={settings} login={login} go={go} notify={notify}
+          reloadUsers={reloadUsers} saveSession={saveSession} />
+      )}
       {view.name === "dashboard" && <StudentDashboard currentUser={currentUser} pdfs={pdfs} subjects={subjects}
         payments={payments} reviews={reviews} submitReview={submitReview} go={go} hasAccess={hasAccess} notify={notify} />}
       <PublicFooter settings={settings} go={go} />
@@ -937,53 +952,169 @@ function FreeNotesPage({ pdfs, subjects, currentUser, settings, hasAccess, go, s
 /* ================================================================== */
 /*  PUBLIC: auth                                                       */
 /* ================================================================== */
-function AuthPage({ mode, settings, login, register, go, notify }) {
-  const [f, setF] = useState({ name: "", email: "", password: "" });
-  const [err, setErr] = useState("");
-  const [done, setDone] = useState(false);
+/** Six-digit code entry with a resend option. */
+function OtpStep({ email, code, setCode, err, busy, onVerify, onResend, devCode, verifyLabel, children }) {
+  return (
+    <div className="mt-6 space-y-3">
+      <div className="rounded-xl px-3 py-2.5 text-sm" style={{ background: "rgba(67,56,202,0.06)", color: "#475569" }}>
+        We sent a 6-digit code to <span className="font-semibold" style={{ color: T.ink }}>{email}</span>. It expires in 10 minutes.
+      </div>
+      {devCode && (
+        <div className="rounded-xl px-3 py-2.5 text-sm" style={{ background: "rgba(217,160,43,0.12)", color: T.goldDark }}>
+          Email isn't configured on the server, so here's your code for testing:{" "}
+          <span className="font-bold" style={{ ...MONO }}>{devCode}</span>
+        </div>
+      )}
+      <label className="block">
+        <span className="block text-sm font-medium mb-1.5" style={{ color: T.ink }}>Verification code</span>
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          onKeyDown={(e) => { if (e.key === "Enter" && code.length === 6) onVerify(); }}
+          placeholder="000000" inputMode="numeric" autoFocus
+          className="w-full rounded-xl px-3.5 py-2.5 text-center text-lg font-bold tracking-[0.4em] outline-none"
+          style={{ ...MONO, border: "1px solid rgba(31,36,64,0.15)", background: "#fff", color: T.ink }} />
+      </label>
+      {children}
+      {err && <p className="text-sm font-medium" style={{ color: "#e11d48" }}>{err}</p>}
+      <Btn kind="primary" className="w-full" disabled={busy || code.length !== 6} onClick={onVerify}>
+        {busy ? "Verifying…" : <><ShieldCheck size={16} /> {verifyLabel}</>}
+      </Btn>
+      <button disabled={busy} onClick={onResend} className="w-full text-center text-xs font-medium" style={{ color: "#64748b" }}>
+        Didn't get it? Resend code
+      </button>
+    </div>
+  );
+}
 
-  const submit = () => {
-    setErr("");
-    if (mode === "login") {
-      const r = login(f.email, f.password);
-      if (!r.ok) return setErr(r.msg);
-      notify("Welcome back!");
-      go(r.role === "ADMIN" ? "admin" : "dashboard");
-    } else if (mode === "register") {
-      if (!f.name || !f.email || !f.password) return setErr("Please fill all fields.");
-      const r = register(f);
-      if (!r.ok) return setErr(r.msg);
-      notify("Account created!");
-      go("dashboard");
-    } else {
-      if (!f.email) return setErr("Enter your email.");
-      setDone(true);
+function AuthPage({ mode, settings, login, go, notify, reloadUsers, saveSession }) {
+  const [f, setF] = useState({ name: "", email: "", password: "" });
+  const [code, setCode] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [step, setStep] = useState("form");   // "form" | "otp"
+  const [devCode, setDevCode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const title = mode === "login" ? "Log in" : mode === "register" ? "Create your account" : "Reset password";
+
+  // Wraps an async auth call: shows a spinner, surfaces server messages.
+  const run = async (fn) => {
+    setErr(""); setBusy(true);
+    try {
+      return await fn();
+    } catch (e) {
+      setErr(e.message || "Something went wrong. Is the server running?");
+      return null;
+    } finally {
+      setBusy(false);
     }
   };
+
+  /* ---- login (checked against the loaded users) ---- */
+  const doLogin = () => {
+    setErr("");
+    const r = login(f.email, f.password);
+    if (!r.ok) return setErr(r.msg);
+    notify("Welcome back!");
+    go(r.role === "ADMIN" ? "admin" : "dashboard");
+  };
+
+  /* ---- sign-up: request a code, then verify to create the account ---- */
+  const requestSignupCode = () => run(async () => {
+    const r = await authApi.registerRequest(f.name, f.email, f.password);
+    if (!r.ok) return setErr(r.msg);
+    setDevCode(r.devCode || "");
+    setStep("otp");
+    notify(r.emailSent ? "Code sent to your email." : "Code generated (email not configured).");
+  });
+
+  const verifySignup = () => run(async () => {
+    const r = await authApi.registerVerify(f.email, code);
+    if (!r.ok) return setErr(r.msg);
+    await reloadUsers();            // the account now exists on the server
+    saveSession(r.user.email);      // log them straight in
+    notify("Email verified — account created!");
+    go("dashboard");
+  });
+
+  /* ---- forgot password: request a code, then verify + set a new password ---- */
+  const requestResetCode = () => run(async () => {
+    const r = await authApi.forgotRequest(f.email);
+    if (!r.ok) return setErr(r.msg);
+    setDevCode(r.devCode || "");
+    setStep("otp");
+    notify(r.emailSent ? "Reset code sent." : "Reset code generated (email not configured).");
+  });
+
+  const verifyReset = () => run(async () => {
+    const r = await authApi.resetPassword(f.email, code, newPassword);
+    if (!r.ok) return setErr(r.msg);
+    await reloadUsers();            // pick up the new password for the login check
+    notify("Password updated — log in with your new password.");
+    setStep("form"); setCode(""); setNewPassword(""); setDevCode("");
+    go("login");
+  });
+
+  const resend = () => (mode === "register" ? requestSignupCode() : requestResetCode());
 
   return (
     <main className="grid min-h-[70vh] place-items-center px-5 py-12" style={GRID}>
       <div className="w-full max-w-md rounded-2xl bg-white p-7 shadow-sm" style={{ border: `1px solid ${T.line}` }}>
         <Logo name={settings.tuitionName} />
-        <h1 className="mt-5 text-2xl font-bold" style={{ ...DISPLAY, color: T.ink }}>
-          {mode === "login" ? "Log in" : mode === "register" ? "Create your account" : "Reset password"}
-        </h1>
-        {mode === "login" && <p className="mt-1 text-xs" style={{ color: "#94a3b8" }}>Student demo: student@demo.in / demo123 · Admin: admin@academy.in / admin123</p>}
+        <h1 className="mt-5 text-2xl font-bold" style={{ ...DISPLAY, color: T.ink }}>{title}</h1>
+        {mode === "login" && (
+          <p className="mt-1 text-xs" style={{ color: "#94a3b8" }}>
+            Student demo: student@demo.in / demo123 · Admin: admin@academy.in / admin123
+          </p>
+        )}
+        {mode === "register" && step === "form" && (
+          <p className="mt-1 text-xs" style={{ color: "#94a3b8" }}>We'll email you a 6-digit code to verify your address.</p>
+        )}
 
-        {done ? (
-          <div className="mt-6 rounded-xl p-4 text-sm" style={{ background: "rgba(16,185,129,0.08)", color: "#047857" }}>
-            If an account exists for {f.email}, a reset link has been sent. (Demo — wire to your email service.)
-          </div>
-        ) : (
+        {/* ---------- LOGIN ---------- */}
+        {mode === "login" && (
           <div className="mt-6 space-y-3">
-            {mode === "register" && <Field label="Full name" value={f.name} onChange={(v) => setF({ ...f, name: v })} placeholder="Your name" />}
             <Field label="Email" type="email" value={f.email} onChange={(v) => setF({ ...f, email: v })} placeholder="you@email.com" />
-            {mode !== "forgot" && <Field label="Password" type="password" value={f.password} onChange={(v) => setF({ ...f, password: v })} placeholder="••••••••" />}
+            <Field label="Password" type="password" value={f.password} onChange={(v) => setF({ ...f, password: v })} placeholder="••••••••" />
             {err && <p className="text-sm font-medium" style={{ color: "#e11d48" }}>{err}</p>}
-            <Btn kind="primary" className="w-full" onClick={submit}>
-              {mode === "login" ? "Log in" : mode === "register" ? "Create account" : "Send reset link"}
+            <Btn kind="primary" className="w-full" onClick={doLogin}>Log in</Btn>
+          </div>
+        )}
+
+        {/* ---------- REGISTER ---------- */}
+        {mode === "register" && step === "form" && (
+          <div className="mt-6 space-y-3">
+            <Field label="Full name" value={f.name} onChange={(v) => setF({ ...f, name: v })} placeholder="Your name" />
+            <Field label="Email" type="email" value={f.email} onChange={(v) => setF({ ...f, email: v })} placeholder="you@email.com" />
+            <Field label="Password" type="password" value={f.password} onChange={(v) => setF({ ...f, password: v })} placeholder="At least 6 characters" />
+            {err && <p className="text-sm font-medium" style={{ color: "#e11d48" }}>{err}</p>}
+            <Btn kind="primary" className="w-full" disabled={busy} onClick={requestSignupCode}>
+              {busy ? "Sending code…" : "Send verification code"}
             </Btn>
           </div>
+        )}
+        {mode === "register" && step === "otp" && (
+          <OtpStep email={f.email} code={code} setCode={setCode} err={err} busy={busy} devCode={devCode}
+            onVerify={verifySignup} onResend={resend} verifyLabel="Verify & create account" />
+        )}
+
+        {/* ---------- FORGOT PASSWORD ---------- */}
+        {mode === "forgot" && step === "form" && (
+          <div className="mt-6 space-y-3">
+            <p className="text-sm" style={{ color: "#64748b" }}>Enter your email and we'll send you a code to reset your password.</p>
+            <Field label="Email" type="email" value={f.email} onChange={(v) => setF({ ...f, email: v })} placeholder="you@email.com" />
+            {err && <p className="text-sm font-medium" style={{ color: "#e11d48" }}>{err}</p>}
+            <Btn kind="primary" className="w-full" disabled={busy} onClick={requestResetCode}>
+              {busy ? "Sending code…" : "Send reset code"}
+            </Btn>
+          </div>
+        )}
+        {mode === "forgot" && step === "otp" && (
+          <OtpStep email={f.email} code={code} setCode={setCode} err={err} busy={busy} devCode={devCode}
+            onVerify={verifyReset} onResend={resend} verifyLabel="Reset password">
+            <Field label="New password" type="password" value={newPassword} onChange={setNewPassword} placeholder="At least 6 characters" />
+          </OtpStep>
         )}
 
         <div className="mt-5 flex items-center justify-between text-sm">

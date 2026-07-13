@@ -74,6 +74,37 @@ payment gateway required:
    unlocks the note for that student and records the sale. The admin can also grant access
    manually under **Admin → Students**.
 
+## Sign-up & password reset (OTP)
+
+Both are verified with a **6-digit one-time code emailed to the address**:
+
+- **Sign-up** — enter name/email/password → a code is emailed → enter the code → *only then* is the
+  account created. An unverified email never becomes an account.
+- **Forgot password** — enter your email → a code is emailed → enter the code + a new password.
+
+Codes expire in **10 minutes**, allow **5 attempts**, and are **single-use**. The forgot-password
+endpoint always reports success so it can't be used to discover which emails are registered.
+
+### Enabling real emails
+
+Without SMTP configured the app still works: the code is written to the **server log**, and in
+local dev it's also shown on screen so you can test. To send real email, set these env vars:
+
+| Variable | Example | Notes |
+| --- | --- | --- |
+| `MAIL_HOST` | `smtp.gmail.com` | Enables email. Leave unset for log-only mode. |
+| `MAIL_PORT` | `587` | |
+| `MAIL_USERNAME` | `you@gmail.com` | |
+| `MAIL_PASSWORD` | *app password* | Gmail: use an **App Password**, not your login password. |
+| `MAIL_FROM` | `you@gmail.com` | Address the code is sent from. |
+
+> Gmail: enable 2-Step Verification, then create an App Password at
+> [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+> **Never commit these** — set them in Render → *Environment*.
+
+In the `prod` profile the code is **never** returned by the API (`app.otp.expose-in-response=false`),
+so if SMTP isn't set, codes are only visible in the server logs.
+
 ## API endpoints
 
 | Method | Path                 | Purpose                                  |
@@ -83,8 +114,12 @@ payment gateway required:
 | GET/PUT| `/api/pdfs`          | List / replace PDF notes                 |
 | GET/PUT| `/api/users`         | List / replace users                     |
 | GET/PUT| `/api/payments`      | List / replace payment records           |
+| GET/PUT| `/api/reviews`       | List / replace student reviews           |
 | POST   | `/api/auth/login`    | `{ email, password }` → user + role      |
-| POST   | `/api/auth/register` | `{ name, email, password }` → new student|
+| POST   | `/api/auth/register/request` | `{ name, email, password }` → emails a code |
+| POST   | `/api/auth/register/verify`  | `{ email, code }` → creates the account |
+| POST   | `/api/auth/password/forgot`  | `{ email }` → emails a reset code |
+| POST   | `/api/auth/password/reset`   | `{ email, code, newPassword }` → sets the password |
 
 The frontend loads each collection with `GET` and persists changes with `PUT` (the admin
 portal edits whole collections). Real, per-resource `AuthController` endpoints are included
