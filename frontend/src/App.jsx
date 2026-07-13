@@ -9,7 +9,7 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid
 } from "recharts";
-import { api as DB } from "./api";
+import { api as DB, API_BASE } from "./api";
 
 /* ------------------------------------------------------------------ */
 /*  Brand tokens (inline styles, since no Tailwind compiler)          */
@@ -243,6 +243,17 @@ function Toast({ msg }) {
   );
 }
 
+/** Shown whenever the backend can't be reached, so nobody mistakes demo data for saved data. */
+function OfflineBanner({ show }) {
+  if (!show) return null;
+  return (
+    <div className="sticky top-0 z-[55] px-4 py-2 text-center text-sm font-semibold"
+      style={{ background: "#b45309", color: "#fff" }}>
+      ⚠️ Can't reach the server ({API_BASE}) — showing demo data. Changes will NOT be saved.
+    </div>
+  );
+}
+
 function Logo({ name, size = 20 }) {
   return (
     <div className="flex items-center gap-2.5">
@@ -268,30 +279,55 @@ export default function App() {
   const [session, setSession] = useState(null); // email of logged-in user
   const [view, setView] = useState({ name: "home" });
   const [toast, setToast] = useState("");
+  const [offline, setOffline] = useState(false); // backend unreachable
 
-  const notify = useCallback((m) => { setToast(m); setTimeout(() => setToast(""), 2200); }, []);
+  const notify = useCallback((m) => { setToast(m); setTimeout(() => setToast(""), 3200); }, []);
 
   // load
   useEffect(() => {
     (async () => {
-      const s = await DB.get("settings"); if (s) setSettings(s); else DB.set("settings", SEED_SETTINGS);
-      const sub = await DB.get("subjects"); if (sub) setSubjects(sub); else DB.set("subjects", SEED_SUBJECTS);
-      const p = await DB.get("pdfs"); if (p) setPdfs(p); else DB.set("pdfs", SEED_PDFS);
-      const u = await DB.get("users"); if (u) setUsers(u); else DB.set("users", SEED_USERS);
-      const pay = await DB.get("payments"); if (pay) setPayments(pay); else DB.set("payments", []);
-      const rev = await DB.get("reviews"); if (rev) setReviews(rev); else DB.set("reviews", []);
+      try {
+        const [s, sub, p, u, pay, rev] = await Promise.all([
+          DB.get("settings"), DB.get("subjects"), DB.get("pdfs"),
+          DB.get("users"), DB.get("payments"), DB.get("reviews"),
+        ]);
+        if (s) setSettings(s);
+        if (sub) setSubjects(sub);
+        if (p) setPdfs(p);
+        if (u) setUsers(u);
+        if (pay) setPayments(pay);
+        if (rev) setReviews(rev);
+        setOffline(false);
+      } catch (e) {
+        // Backend unreachable — fall back to seed content, but say so loudly
+        // instead of silently pretending everything is fine.
+        console.error("[app] could not load data from the backend:", e);
+        setOffline(true);
+      }
       const cur = await DB.get("session"); if (cur) setSession(cur);
       setLoaded(true);
     })();
   }, []);
 
+  // Persist to the backend. If the write fails the user is told, because the
+  // change only lives in React state and would be lost on the next refresh.
+  const persist = useCallback((key, value) => {
+    DB.set(key, value)
+      .then(() => setOffline(false))
+      .catch((e) => {
+        console.error(`[app] save failed for "${key}":`, e);
+        setOffline(true);
+        notify("⚠️ Not saved — can't reach the server. Your change will be lost on refresh.");
+      });
+  }, [notify]);
+
   // persisters
-  const saveSettings = (s) => { setSettings(s); DB.set("settings", s); };
-  const saveSubjects = (s) => { setSubjects(s); DB.set("subjects", s); };
-  const savePdfs = (p) => { setPdfs(p); DB.set("pdfs", p); };
-  const saveUsers = (u) => { setUsers(u); DB.set("users", u); };
-  const savePayments = (p) => { setPayments(p); DB.set("payments", p); };
-  const saveReviews = (r) => { setReviews(r); DB.set("reviews", r); };
+  const saveSettings = (s) => { setSettings(s); persist("settings", s); };
+  const saveSubjects = (s) => { setSubjects(s); persist("subjects", s); };
+  const savePdfs = (p) => { setPdfs(p); persist("pdfs", p); };
+  const saveUsers = (u) => { setUsers(u); persist("users", u); };
+  const savePayments = (p) => { setPayments(p); persist("payments", p); };
+  const saveReviews = (r) => { setReviews(r); persist("reviews", r); };
   const saveSession = (email) => { setSession(email); DB.set("session", email); };
 
   const currentUser = useMemo(() => users.find((u) => u.email === session) || null, [users, session]);
@@ -360,6 +396,7 @@ export default function App() {
       return <AdminGate onLogin={login} go={go} notify={notify} settings={settings} />;
     }
     return <AdminPortal
+      offline={offline}
       settings={settings} saveSettings={saveSettings}
       subjects={subjects} saveSubjects={saveSubjects}
       pdfs={pdfs} savePdfs={savePdfs}
@@ -373,6 +410,7 @@ export default function App() {
   return (
     <div style={{ ...BODY, color: T.ink, minHeight: "100vh", background: T.paper }}>
       <FontLoader />
+      <OfflineBanner show={offline} />
       <PublicNav settings={settings} view={view} go={go} currentUser={currentUser} logout={logout} />
       {view.name === "home" && <HomePage settings={settings} subjects={subjects} reviews={reviews} go={go} />}
       {view.name === "subjects" && <SubjectsPage subjects={subjects} pdfs={pdfs} go={go} />}
@@ -1156,7 +1194,7 @@ function AdminGate({ onLogin, go, notify, settings }) {
 /* ================================================================== */
 /*  ADMIN: portal shell                                                */
 /* ================================================================== */
-function AdminPortal({ settings, saveSettings, subjects, saveSubjects, pdfs, savePdfs, users, saveUsers, payments, savePayments, reviews, saveReviews, go, logout, notify, admin }) {
+function AdminPortal({ offline, settings, saveSettings, subjects, saveSubjects, pdfs, savePdfs, users, saveUsers, payments, savePayments, reviews, saveReviews, go, logout, notify, admin }) {
   const [tab, setTab] = useState("dashboard");
   const [open, setOpen] = useState(false);
   const nav = [
@@ -1201,6 +1239,7 @@ function AdminPortal({ settings, saveSettings, subjects, saveSubjects, pdfs, sav
 
       {/* main */}
       <div className="flex-1">
+        <OfflineBanner show={offline} />
         <header className="sticky top-0 z-20 flex items-center justify-between bg-white px-5 py-3 shadow-sm">
           <div className="flex items-center gap-3">
             <button className="md:hidden" onClick={() => setOpen(true)}><Menu /></button>
